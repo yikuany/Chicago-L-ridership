@@ -1,0 +1,90 @@
+================================================================================
+MGWR Version: 2.2.1
+Released on: 03/20/2020
+Source code is available at: https://github.com/pysal/mgwr
+Development Team: Ziqi Li, Taylor Oshan, Stewart Fotheringham, Wei Kang, 
+Levi Wolf, Hanchen Yu, Mehak Sachdeva, and Sarah Bardin
+Spatial Analysis Research Center (SPARC)
+Arizona State University, Tempe, USA
+================================================================================
+Model type:                                                             Gaussian
+Number of observations:                                                      116
+Number of covariates:                                                          8
+Dependent variable:                                                    avg_rides
+Variable standardization:                                                    Off
+Total runtime:                                                           0:00:11
+
+Global Regression Results
+--------------------------------------------------------------------------------
+Residual sum of squares:                                                  57.307
+Log-likelihood:                                                         -123.697
+AIC:                                                                     263.394
+AICc:                                                                    267.092
+R2:                                                                        0.502
+Adj. R2:                                                                   0.469
+
+Variable                                   Est.         SE  t(Est/SE)    p-value
+------------------------------------ ---------- ---------- ---------- ----------
+Intercept                                 0.000      0.068      0.000      1.000
+TL                                        0.119      0.084      1.428      0.153
+RD                                       -0.011      0.089     -0.127      0.899
+LUI                                       0.598      0.121      4.920      0.000
+LUM                                      -0.494      0.177     -2.790      0.005
+GBS                                       0.055      0.111      0.495      0.621
+TS                                        0.092      0.127      0.722      0.470
+ES                                        0.243      0.139      1.751      0.080
+
+Multiscale Geographically Weighted Regression (MGWR) Results
+--------------------------------------------------------------------------------
+Coordinates type:                                                      Projected
+Spatial kernel:                                                Adaptive bisquare
+Criterion for optimal bandwidth:                                            AICc
+Score of change (SOC) type:                                                  RSS
+Termination criterion for MGWR:                                          1.0e-05
+Number of iterations used:                                                    40
+
+MGWR bandwidths
+--------------------------------------------------------------------------------
+Variable                  Bandwidth      ENP_j   Adj t-val(95%)            DoD_j
+Intercept                    47.000      4.186            2.554            0.699
+TL                           43.000      3.588            2.497            0.731
+RD                           44.000      4.989            2.618            0.662
+LUI                          60.000      2.849            2.410            0.780
+LUM                         115.000      1.296            2.092            0.946
+GBS                          70.000      3.457            2.483            0.739
+TS                          113.000      1.304            2.095            0.944
+ES                          115.000      1.305            2.096            0.944
+
+Diagnostic Information
+--------------------------------------------------------------------------------
+Residual sum of squares:                                                  26.751
+Effective number of parameters (trace(S)):                                22.973
+Degree of freedom (n - trace(S)):                                         93.027
+Sigma estimate:                                                            0.536
+Log-likelihood:                                                          -79.510
+Degree of Dependency (DoD):                                                0.778
+AIC:                                                                     206.966
+AICc:                                                                    220.120
+BIC:                                                                     272.978
+R2:                                                                        0.767
+Adj. R2:                                                                   0.709
+
+Summary Statistics For MGWR Parameter Estimates
+--------------------------------------------------------------------------------
+Variable                        Mean        STD        Min     Median        Max
+--------------------      ---------- ---------- ---------- ---------- ----------
+Intercept                      0.174      0.253     -0.300      0.194      0.520
+TL                             0.363      0.246     -0.052      0.378      0.845
+RD                             0.068      0.179     -0.443      0.006      0.533
+LUI                            0.628      0.211      0.293      0.498      0.979
+LUM                           -0.128      0.019     -0.161     -0.128     -0.097
+GBS                           -0.077      0.137     -0.300     -0.106      0.190
+TS                             0.075      0.016      0.032      0.078      0.095
+ES                             0.068      0.008      0.055      0.067      0.084
+================================================================================
+Acknowledgement:
+We acknowledge the support of the National Science Foundation under Award 1758786 
+from the Geography and Spatial Sciences Program to A. S. Fotheringham which 
+enabled this software to be written and made freely available.
+================================================================================
+

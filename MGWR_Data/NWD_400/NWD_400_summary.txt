@@ -1,0 +1,93 @@
+================================================================================
+MGWR Version: 2.2.1
+Released on: 03/20/2020
+Source code is available at: https://github.com/pysal/mgwr
+Development Team: Ziqi Li, Taylor Oshan, Stewart Fotheringham, Wei Kang, 
+Levi Wolf, Hanchen Yu, Mehak Sachdeva, and Sarah Bardin
+Spatial Analysis Research Center (SPARC)
+Arizona State University, Tempe, USA
+================================================================================
+Model type:                                                             Gaussian
+Number of observations:                                                      116
+Number of covariates:                                                          9
+Dependent variable:                                                    avg_rides
+Variable standardization:                                                     On
+Total runtime:                                                           0:00:09
+
+Global Regression Results
+--------------------------------------------------------------------------------
+Residual sum of squares:                                                  69.559
+Log-likelihood:                                                         -134.935
+AIC:                                                                     287.870
+AICc:                                                                    291.966
+R2:                                                                        0.400
+Adj. R2:                                                                   0.356
+
+Variable                                   Est.         SE  t(Est/SE)    p-value
+------------------------------------ ---------- ---------- ---------- ----------
+Intercept                                 0.000      0.075      0.000      1.000
+TL                                        0.038      0.092      0.417      0.677
+BS                                        0.091      0.105      0.863      0.388
+RD                                       -0.025      0.087     -0.284      0.776
+LUM                                      -0.004      0.167     -0.024      0.981
+GBS                                      -0.251      0.115     -2.183      0.029
+TS                                       -0.006      0.113     -0.056      0.955
+ES                                       -0.134      0.122     -1.102      0.271
+LUI                                       0.549      0.127      4.317      0.000
+
+Multiscale Geographically Weighted Regression (MGWR) Results
+--------------------------------------------------------------------------------
+Coordinates type:                                                      Projected
+Spatial kernel:                                                Adaptive bisquare
+Criterion for optimal bandwidth:                                            AICc
+Score of change (SOC) type:                                                  RSS
+Termination criterion for MGWR:                                          1.0e-05
+Number of iterations used:                                                    16
+
+MGWR bandwidths
+--------------------------------------------------------------------------------
+Variable                  Bandwidth      ENP_j   Adj t-val(95%)            DoD_j
+Intercept                    47.000      4.326            2.566            0.692
+TL                           47.000      3.226            2.457            0.754
+BS                           44.000      5.082            2.625            0.658
+RD                           46.000      4.968            2.617            0.663
+LUM                         115.000      1.290            2.091            0.946
+GBS                          46.000      5.451            2.650            0.643
+TS                          106.000      1.489            2.151            0.916
+ES                          115.000      1.296            2.093            0.945
+LUI                          60.000      2.840            2.409            0.780
+
+Diagnostic Information
+--------------------------------------------------------------------------------
+Residual sum of squares:                                                  26.232
+Effective number of parameters (trace(S)):                                29.970
+Degree of freedom (n - trace(S)):                                         86.030
+Sigma estimate:                                                            0.552
+Log-likelihood:                                                          -78.374
+Degree of Dependency (DoD):                                                0.747
+AIC:                                                                     218.689
+AICc:                                                                    242.255
+BIC:                                                                     303.968
+R2:                                                                        0.774
+Adj. R2:                                                                   0.694
+
+Summary Statistics For MGWR Parameter Estimates
+--------------------------------------------------------------------------------
+Variable                        Mean        STD        Min     Median        Max
+--------------------      ---------- ---------- ---------- ---------- ----------
+Intercept                      0.152      0.315     -0.255      0.090      0.623
+TL                             0.245      0.221     -0.080      0.301      0.508
+BS                             0.123      0.143     -0.481      0.134      0.397
+RD                             0.067      0.226     -0.300      0.051      0.554
+LUM                            0.008      0.015     -0.032      0.012      0.024
+GBS                           -0.213      0.239     -0.572     -0.220      0.076
+TS                             0.129      0.034      0.054      0.140      0.177
+ES                            -0.156      0.004     -0.165     -0.156     -0.147
+LUI                            0.578      0.174      0.392      0.536      0.894
+================================================================================
+Acknowledgement:
+We acknowledge the support of the National Science Foundation under Award 1758786 
+from the Geography and Spatial Sciences Program to A. S. Fotheringham which 
+enabled this software to be written and made freely available.
+================================================================================
+
