@@ -1,0 +1,1571 @@
+---
+title: "Final_Project"
+author: "Yikuan Ye"
+date: "2023-11-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# read spatial data 
+library(sf)
+# Create maps
+library(tmap)
+library(tmaptools)
+# Basic data manipulation
+library(tidyverse)
+# Package for spatial autocorrelation
+library(spdep)
+# Package for geographically weighted regression
+library(spgwr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+```
+
+```{r}
+# Explanatory variable data cleaning
+# Building footprints in Chicago
+bldg_fp  <-  st_read("Buildings/Building Footprints (current)/geo_export_08eedaf5-078f-4ba9-bfd1-4063c8d24d5f.shp")
+
+# Remove tiny building footprints to promote computation efficiency
+bldg_fp <- bldg_fp |> filter(shape_area >= 400)
+
+# Further filter building footprints by attributes
+factor(bldg_fp$bldg_statu)
+bldg_fp <- bldg_fp |> filter(bldg_statu=="ACTIVE")
+bldg_fp <- bldg_fp |> filter(stories != 0)
+
+bldg_fp <- bldg_fp |> select(c("date_bldg_","bldg_condi","bldg_id","shape_area","st_name1",
+                               "st_type1","stories","x_coord","y_coord","year_built","geometry"))
+
+#Export shp files for GIS analysis
+st_write(bldg_fp, "Buildings/Building_Footprints.shp", delete_layer = T)
+```
+
+```{r}
+# POI in Chicago
+pois <- read_csv("Metro_Project/Chicago POI/Chicago.csv")
+levels(as.factor(pois$CATEGORY))
+
+# Remove categories which may cause multicollinearity
+pois <- pois |> filter(CATEGORY!="AUTOMOTIVE"&CATEGORY!="SETTLEMENTS"&CATEGORY!="TRANSPORT")
+levels(as.factor(pois$CATEGORY))
+
+# Reclassify POI into 5 Major categories: 
+# Living Service (LS), Government and Business Service (GBS), Education Service (ES), Health Service (HS)
+# and Tourism Service (TS)
+pois <- pois |> 
+    mutate(MAJOR_CATEGORY = case_when(
+    CATEGORY %in% c("EAT/DRINK", "LANDUSE", "RELIGIOUS", "SHOP", "SPORT") ~ "LS",
+    CATEGORY %in% c("BUSINESS", "PUBLICSERVICE") ~ "GBS",
+    CATEGORY %in% c("TOURISM", "ACCOMMODATION") ~ "TS",
+    CATEGORY == "EDUCATION" ~ "ES",
+    CATEGORY == "HEALTH" ~ "HS"
+  )) |> 
+    filter(!is.na(MAJOR_CATEGORY))
+
+pois <- pois |> select(c("OBJECTID","NAME","MAJOR_CATEGORY","CATEGORY","SUBCATEGOR",
+                         "LON","LAT","WKT"))
+
+#Export files for GIS analysis
+write.csv(pois, "Metro_Project/Chicago POI/Chicago_POI.csv", row.names = FALSE)
+pois_sf <- st_as_sf(pois, coords = c("LON", "LAT"), crs = 4326, agr = "constant")
+st_write(pois_sf, "Metro_Project/Chicago POI/Chicago_POI.shp", delete_layer = TRUE)
+
+# Building footprints and POI data are further processed in ArcGIS Pro to calculate independent variables:
+# Building Density (BD), Land Use Intensity (LUI) and Land Use Mixture (LUM) in different types of 
+# Metro Station Catchment Area (MSCA).
+# Other independent variables including Road Density (RD) and Bus Stops (BS) are directly pre-processed
+# in ArcGIS Pro.
+```
+
+
+```{r}
+# Response variable data cleaning
+ridership <- read_csv("Ridership/CTA_-_Ridership_-__L__Station_Entries_-_Daily_Totals_20231116.csv")
+ms <- st_read("Metro_Project/L_Lines_Stations/CTA_RailStations/CTA_RailStations.shp")
+lstops <- 
+    read_csv("Metro_Project/L_Lines_Stations/CTA_-_System_Information_-_List_of__L__Stops_20231116.csv")
+
+# Use ridership data from July 1, 2022 to June 30, 2023
+ridership$date <- mdy(ridership$date)
+ridership <- ridership |> filter(date >= "2022-07-01" & date <= "2023-06-30")
+
+# Select metro stations according to GIS-cleaned data (ms dataset) which includes 119 metro stations
+ridership$station_id <- ridership$station_id-40000
+ridership <- ridership |> left_join(ms, c("station_id"="STATION_ID"))
+ridership <- na.omit(ridership)
+ridership <- ridership |> select(-"ADDRESS",-"ADA",-"PKNRD",-"LONGNAME")
+
+si_ridership <- as.numeric(levels(as.factor(ridership$station_id)))
+for (i in ms$STATION_ID) {
+    if(i %in% si_ridership == F){
+        print(i)
+    }
+}
+# There are only 118 metro stations left in each day
+# "410 Roosevelt/Wabash" is missing in the ridership dataset
+# Check out the detailed information in lstops dataset
+any(lstops$MAP_ID==40410)    
+# There is also no "410 Roosevelt/Wabash" information
+lstops[lstops$STATION_NAME=="Roosevelt",]
+ms[ms$STATION_ID=="410"|ms$STATION_ID=="1400",]
+# "410 Roosevelt/Wabash" is integrated to "1400 Roosevelt" in both ridership and lstops datasets
+
+# Revise "LINES" information of "1400 Roosevelt" in ridership dataset
+for (i in 1:length(ridership[ridership$station_id=="1400",]$LINES)) {
+    ridership[ridership$station_id=="1400",]$LINES[i]<-"Red, Orange, Green"
+}
+
+# Count transfer lines ("TL") at each station 
+ridership <- ridership |> mutate(TL = str_count(LINES,",")+1)
+
+```
+
+```{r}
+# Visualize daily ridership patterns on weekdays, weekends and holidays
+# Calculate total ridership by date
+daily_ridership <- ridership |> 
+    group_by(date) |> 
+    summarise(total_ridership = sum(rides))
+
+# Differentiate daily ridership by day type
+day_type <- ridership |> 
+    select(c("date","daytype")) |> 
+    unique()
+
+daily_ridership <- daily_ridership |> 
+    left_join(day_type, c("date"="date"))
+
+# Plot processing
+daily_ridership$date <- as.POSIXct(daily_ridership$date)
+daily_ridership$daytype <- factor(daily_ridership$daytype, levels = c("W", "A", "U"))
+
+ggplot(daily_ridership, aes(x = date, y = total_ridership, group = 1, color = daytype)) +
+    geom_line() +
+    geom_point(size = 2) + 
+    scale_color_manual(values = c("W" = "red", "A" = "green", "U" = "blue"),
+                       labels = c("W" = "Weekday", "A" = "Saturday", "U" = "Sunday/Holiday")) +
+    labs(x = "Date", 
+         y = "Daily Total Ridership",
+         color = "Day Type") +
+    theme_minimal() +
+    theme(legend.position = "bottom",
+          legend.background = element_blank(), # Remove the legend background
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), # Add a black border
+          legend.margin = margin(-5, 0, 0, 0),
+          legend.text = element_text(size = 10),
+          axis.text.x = element_text(angle = 45, vjust = 0.5, size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 12,  vjust = -0.5), 
+          axis.title.y = element_text(size = 12)) +
+    scale_x_datetime(date_breaks = "1 months") +
+    scale_y_continuous(labels = scales::comma)
+
+```
+
+
+```{r}
+# Divide the ridership data into 2 groups
+# Weekday group (255 days)
+WD_ridership <- ridership |> filter(daytype=="W")
+# Non-weekday group (110 days)
+NWD_ridership <- ridership |> filter(daytype=="A"|daytype=="U")
+```
+
+```{r}
+# Remove stations with empty ridership data in WD_ridership dataset
+filter(WD_ridership, rides==0)
+levels(as.factor(filter(WD_ridership, rides==0)$station_id))
+# Remove "340" and "770" which have 0 rides
+WD_ridership <- WD_ridership |> filter(station_id!=340&station_id!=770)
+
+# Remove stations with empty ridership data in NWD_ridership dataset
+filter(NWD_ridership, rides==0)
+levels(as.factor(filter(NWD_ridership, rides==0)$station_id))
+NWD_ridership <- NWD_ridership |> filter(station_id!=340&station_id!=770)
+
+# Ultimately, a total of 116 metro stations in Chicago will be involved in further analysis.
+```
+
+```{r}
+# Examine the normality of the ridership data
+# Calculate average daily ridership of each station on weekdays
+aver_ridership <- WD_ridership |> 
+    group_by(station_id) |> 
+    summarise(aver_daily_rides = mean(rides))
+
+ggplot(aver_ridership, aes(x=aver_daily_rides))+
+    geom_histogram(binwidth=500, color="black", alpha=0.5)+
+    geom_vline(aes(xintercept=mean(aver_daily_rides)), color="red", linetype="dashed", linewidth=1) +
+    geom_vline(aes(xintercept=median(aver_daily_rides)), color="blue", linetype="dashed", linewidth=1) +
+    labs(x = "Average Daily Ridership by Station on Weekdays")+
+     theme_minimal() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+# The histogram's tail extends to the right (long tail on the right side),
+# indicating the presence of larger values,
+# while the bulk of the data is concentrated in the area of smaller values. 
+# The mean being located to the right of the median confirms the data exhibits a right or positive skew.
+
+qqnorm(aver_ridership$aver_daily_rides, 
+       main = "Raw Data QQ Plot (Weekdays)", 
+       xlab = "Theoretical Quantiles",
+       ylab = "Sample Quantiles")
+qqline(aver_ridership$aver_daily_rides, col = "red", lwd = 2)
+
+# Concave is found in QQ plot, the data is skewed to right.
+```
+
+```{r}
+# Calculate average daily ridership of each station on weekends and holidays
+aver_ridership2 <- NWD_ridership |> 
+    group_by(station_id) |> 
+    summarise(aver_daily_rides = mean(rides))
+
+ggplot(aver_ridership2, aes(x=aver_daily_rides))+
+    geom_histogram(binwidth=500, color="black", alpha=0.5)+
+    geom_vline(aes(xintercept=mean(aver_daily_rides)), color="red", linetype="dashed", linewidth=1) +
+    geom_vline(aes(xintercept=median(aver_daily_rides)), color="blue", linetype="dashed", linewidth=1) +
+    labs(x = "Average Daily Ridership by Station on Weekends/Holidays")+
+     theme_minimal() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+qqnorm(aver_ridership2$aver_daily_rides, 
+       main = "Raw Data QQ Plot (Weekends/Holidays)", 
+       xlab = "Theoretical Quantiles",
+       ylab = "Sample Quantiles")
+qqline(aver_ridership2$aver_daily_rides, col = "red", lwd = 2)
+
+# The data is also skewed to right (small values).
+```
+
+```{r}
+# Since the raw ridership is skewed to small values,
+# a log-normal transformation needs to be applied to the raw data 
+# to approach the assumed Gaussian distribution.
+
+# Examine the normality of the log-normal transformed ridership data of weekdays
+aver_log_ridership <- WD_ridership |> 
+    group_by(station_id) |> 
+    summarise(aver_log_rides = log(mean(rides)))
+
+ggplot(aver_log_ridership, aes(x=aver_log_rides))+
+    geom_histogram(binwidth=0.5, color="black", alpha=0.5)+
+    geom_vline(aes(xintercept=mean(aver_log_rides)), color="red", linetype="dashed", linewidth=1) +
+    geom_vline(aes(xintercept=median(aver_log_rides)), color="blue", linetype="dashed", linewidth=1) +
+    labs(x = "Log-transformed average daily ridership by Station on Weekdays")+
+     theme_minimal() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+qqnorm(aver_log_ridership$aver_log_rides, 
+       main = "Log-normal transformed Data QQ Plot (Weekdays)", 
+       xlab = "Theoretical Quantiles",
+       ylab = "Sample Quantiles")
+qqline(aver_log_ridership$aver_log_rides, col = "red", lwd = 2)
+
+# Examine the normality of the log-normal transformed ridership data of weekends/holidays
+aver_log_ridership2 <- NWD_ridership |> 
+    group_by(station_id) |> 
+    summarise(aver_log_rides = log(mean(rides)))
+
+ggplot(aver_log_ridership2, aes(x=aver_log_rides))+
+    geom_histogram(binwidth=0.5, color="black", alpha=0.5)+
+    geom_vline(aes(xintercept=mean(aver_log_rides)), color="red", linetype="dashed", linewidth=1) +
+    geom_vline(aes(xintercept=median(aver_log_rides)), color="blue", linetype="dashed", linewidth=1) +
+    labs(x = "Log-transformed average daily ridership by Station on Weekends/Holidays")+
+     theme_minimal() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+qqnorm(aver_log_ridership2$aver_log_rides, 
+       main = "Log-normal transformed Data QQ Plot (Weekends/Holidays)", 
+       xlab = "Theoretical Quantiles",
+       ylab = "Sample Quantiles")
+qqline(aver_log_ridership2$aver_log_rides, col = "red", lwd = 2)
+
+# Response variable data processing is completed.
+```
+
+```{r}
+# Draw 4 scenarios of circular buffers 
+ms_400m <- st_buffer(ms, dist = 400)
+ms_500m <- st_buffer(ms, dist = 500)
+ms_600m <- st_buffer(ms, dist = 600)
+ms_800m <- st_buffer(ms, dist = 800)
+
+ggplot() +
+  geom_sf(data = ms_400m, fill = NA, color = 'red') +
+  geom_sf(data = ms_500m, fill = NA, color = 'yellow') +
+  geom_sf(data = ms_600m, fill = NA, color = 'green') +
+  geom_sf(data = ms_800m, fill = NA, color = 'blue') +
+  geom_sf(data = ms, color = 'black', size = 0.1) +
+  theme_minimal()
+```
+
+```{r}
+# Get a map of 4 scenarios of circular buffers
+library(tmap)
+library(tmaptools)
+
+bbox <- st_bbox(ms)
+osm_base <- read_osm(bbox, type = "osm")
+
+tmap_mode("view")
+tm_shape(osm_base) +
+  tm_rgb() +
+  tm_shape(ms_400m) +
+  tm_borders(col = "red") +
+  tm_shape(ms_500m) +
+  tm_borders(col = "yellow") +
+  tm_shape(ms_600m) +
+  tm_borders(col = "green") +
+  tm_shape(ms_800m) +
+  tm_borders(col = "blue") +
+  tm_shape(ms) +
+  tm_dots(col = "black", size = 0.01)
+
+```
+
+```{r}
+# Draw 2 scenarios of isochrones 
+roads <- st_read("Metro_Project/Street Center Lines/geo_export_6daaa44b-aea8-4435-9fcf-f2139be05afd.shp")
+ms <- st_read("Metro_Project/L_Lines_Stations/CTA_RailStations/CTA_RailStations.shp")
+
+library(sf)
+library(gdistance)
+
+roads_transit <- as(roads, "SpatialLinesDataFrame")
+transit_matrix <- costDistance(roads_transit, ms)
+
+walk_speed <- 80 
+time_limit <- 5 * 60 
+max_distance <- walk_speed * time_limit 
+isochrones_5min <- transit_matrix <= max_distance
+
+time_limit2 <- 10 * 60 
+max_distance2 <- walk_speed * time_limit2 
+isochrones_10min <- transit_matrix <= max_distance2
+
+library(ggplot2)
+ggplot() +
+  geom_sf(data = ms) +
+  geom_sf(data = isochrones_5min, color = "red", size = 0.5) +
+  theme_minimal()
+ggplot() +
+  geom_sf(data = ms) +
+  geom_sf(data = isochrones_10min, color = "green", size = 0.5) +
+  theme_minimal()
+```
+
+
+```{r}
+# Import a total of 6 scenarios of MSCA (4 scenarios of circular buffers and 2 scenarios of isochrones)
+# There are 10 explanatory variables measured based on MSCA, including Bus Stops (BS), Road Density (RD),
+# Building Density (BD), Land Use Intensity (LUI), Land Use Mixture (LUM), Living Services (LS), 
+# Government and Business Services (GBS), Tourism Services (TS) and Education Services (ES),
+# which all have been processed in ArcGIS Pro.
+
+MSCA400 <- read_csv("6MSCA_Data/400.csv")
+MSCA500 <- read_csv("6MSCA_Data/500.csv")
+MSCA600 <- read_csv("6MSCA_Data/600.csv")
+MSCA800 <- read_csv("6MSCA_Data/800.csv")
+MSCA5min <- read_csv("6MSCA_Data/5min.csv")
+MSCA10min <- read_csv("6MSCA_Data/10min.csv")
+```
+
+```{r}
+# Join the explanatory variable data with the response variable data
+
+# Scenario 1: 400m buffer
+# Model 1: Daily ridership on weekdays as the response variable
+WD_400 <- WD_ridership |> 
+    left_join(MSCA400, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Model 2: Daily ridership on weekends/holidays as the response variable
+NWD_400 <- NWD_ridership |> 
+    left_join(MSCA400, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Scenario 2: 500m buffer
+# Model 1
+WD_500 <- WD_ridership |> 
+    left_join(MSCA500, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Model 2
+NWD_500 <- NWD_ridership |> 
+    left_join(MSCA500, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Scenario 3: 600m buffer
+# Model 1
+WD_600 <- WD_ridership |> 
+    left_join(MSCA600, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Model 2
+NWD_600 <- NWD_ridership |> 
+    left_join(MSCA600, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Scenario 4: 800m buffer
+# Model 1
+WD_800 <- WD_ridership |> 
+    left_join(MSCA800, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Model 2
+NWD_800 <- NWD_ridership |> 
+    left_join(MSCA800, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Scenario 5: 5min isochrone
+# Model 1
+WD_5min <- WD_ridership |> 
+    left_join(MSCA5min, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Model 2
+NWD_5min <- NWD_ridership |> 
+    left_join(MSCA5min, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Scenario 6: 10min isochrone
+# Model 1
+WD_10min <- WD_ridership |> 
+    left_join(MSCA10min, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+
+# Model 2
+NWD_10min <- NWD_ridership |> 
+    left_join(MSCA10min, c("station_id"="STATION_ID")) |> 
+    select(c("station_id","stationname","date","daytype","rides","LINES","POINT_X","POINT_Y",
+             "geometry","TL","BS","RD","BD","LUI","LUM","LS","GBS","TS","ES"))
+```
+
+
+```{r}
+# Since temporal changes are not considered in the MGWR model,
+# annual average daily rides for each station on weekdays and weekends/holidays 
+# are calculated to serve as the dependent variable.
+# Based on the normality test above, a log-normal transformation should be applied to the ridership data. 
+# Standardize all variables before model fitting
+
+avg_ridership <- WD_400 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+WD_400 <- WD_400 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+WD_400$avg_rides <- log(WD_400$avg_rides)
+WD_400[, 7:17] <- scale(WD_400[, 7:17])
+
+avg_ridership <- NWD_400 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+NWD_400 <- NWD_400 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+NWD_400$avg_rides <- log(NWD_400$avg_rides)
+NWD_400[, 7:17] <- scale(NWD_400[, 7:17])
+
+avg_ridership <- WD_500 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+WD_500 <- WD_500 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+WD_500$avg_rides <- scale(log(WD_500$avg_rides))
+WD_500[, 7:16] <- scale(WD_500[, 7:16])
+
+avg_ridership <- NWD_500 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+NWD_500 <- NWD_500 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+NWD_500$avg_rides <- scale(log(NWD_500$avg_rides))
+NWD_500[, 7:16] <- scale(NWD_500[, 7:16])
+
+avg_ridership <- WD_600 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+WD_600 <- WD_600 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+WD_600$avg_rides <- scale(log(WD_600$avg_rides))
+WD_600[, 7:16] <- scale(WD_600[, 7:16])
+
+avg_ridership <- NWD_600 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+NWD_600 <- NWD_600 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+NWD_600$avg_rides <- scale(log(NWD_600$avg_rides))
+NWD_600[, 7:16] <- scale(NWD_600[, 7:16])
+
+avg_ridership <- WD_800 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+WD_800 <- WD_800 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+WD_800$avg_rides <- scale(log(WD_800$avg_rides))
+WD_800[, 7:16] <- scale(WD_800[, 7:16])
+
+avg_ridership <- NWD_800 |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+NWD_800 <- NWD_800 |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+NWD_800$avg_rides <- scale(log(NWD_800$avg_rides))
+NWD_800[, 7:16] <- scale(NWD_800[, 7:16])
+
+avg_ridership <- WD_5min |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+WD_5min <- WD_5min |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+WD_5min$avg_rides <- scale(log(WD_5min$avg_rides))
+WD_5min[, 7:16] <- scale(WD_5min[, 7:16])
+
+avg_ridership <- NWD_5min |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+NWD_5min <- NWD_5min |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+NWD_5min$avg_rides <- scale(log(NWD_5min$avg_rides))
+NWD_5min[, 7:16] <- scale(NWD_5min[, 7:16])
+
+avg_ridership <- WD_10min |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+WD_10min <- WD_10min |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+WD_10min$avg_rides <- log(WD_10min$avg_rides)
+WD_10min[, 7:17] <- scale(WD_10min[, 7:17])
+
+avg_ridership <- NWD_10min |> 
+  group_by(station_id) |> 
+  summarise(avg_rides = mean(rides)) 
+NWD_10min <- NWD_10min |> 
+  left_join(avg_ridership, c("station_id"="station_id")) |> 
+  select(-"date", -"daytype", -"rides") |> 
+  unique()
+NWD_10min$avg_rides <- log(NWD_10min$avg_rides)
+NWD_10min[, 7:17] <- scale(NWD_10min[, 7:17])
+```
+
+```{r}
+# Export data for MGWR modeling in MGWR 2.2 software developed by the Spatial Analysis Research Center
+# of Arizona State University
+write.csv(WD_400[-6], "WD_400.csv", row.names = FALSE)
+write.csv(NWD_400[-6], "NWD_400.csv", row.names = FALSE)
+write.csv(WD_500[-6], "WD_500.csv", row.names = FALSE)
+write.csv(NWD_500[-6], "NWD_500.csv", row.names = FALSE)
+write.csv(WD_600[-6], "WD_600.csv", row.names = FALSE)
+write.csv(NWD_600[-6], "NWD_600.csv", row.names = FALSE)
+write.csv(WD_800[-6], "WD_800.csv", row.names = FALSE)
+write.csv(NWD_800[-6], "NWD_800.csv", row.names = FALSE)
+write.csv(WD_5min[-6], "WD_5min.csv", row.names = FALSE)
+write.csv(NWD_5min[-6], "NWD_5min.csv", row.names = FALSE)
+write.csv(WD_10min[-6], "WD_10min.csv", row.names = FALSE)
+write.csv(NWD_10min[-6], "NWD_10min.csv", row.names = FALSE)
+```
+
+
+```{r}
+# Examine the multicollinearity between the explanatory variables
+library(car)
+library(corrr)
+
+# Scenario 1
+# Model 1
+# Step1: Calculate Pearson Correlation Coefficients
+cor_mx1 <- cor(WD_400[7:16], method = "pearson")
+cor_mx1[upper.tri(cor_mx1)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx1) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS and BD whose coefficients are greater than 0.7
+
+# Step2: Calculate Variance Inflation Factors
+model1 <- lm(avg_rides ~ TL+BS+RD+LUM+GBS+TS+ES+LUI, data=WD_400)
+vif(model1)
+# All variable with VIFs less than 10
+
+# Step3: Calculate the Condition Number 
+kappa(model1)
+# CN is less than 30
+
+# Model 2
+# Step1: Calculate Pearson Correlation Coefficients
+cor_mx2 <- cor(NWD_400[7:16], method = "pearson")
+cor_mx2[upper.tri(cor_mx2)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx2) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS and BD whose coefficients are greater than 0.7
+
+# Step2: Calculate Variance Inflation Factors
+model2 <- lm(avg_rides ~ TL+BS+RD+LUM+GBS+TS+ES+LUI, data=NWD_400)
+vif(model2)
+# All variable with VIFs smaller than 10
+
+# Step3: Calculate the Condition Number 
+kappa(model2)
+# CN is less than 30
+
+```
+
+```{r}
+# Scenario 2
+# Model 1
+# S1: PCCs
+cor_mx3 <- cor(WD_500[7:16], method = "pearson")
+cor_mx3[upper.tri(cor_mx3)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx3) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD, BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model3 <- lm(avg_rides ~ TL+RD+LUM+GBS+TS+ES+LUI, data=WD_500)
+vif(model3)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model3)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx4 <- cor(NWD_500[7:16], method = "pearson")
+cor_mx4[upper.tri(cor_mx4)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx4) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD, BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model4 <- lm(avg_rides ~ TL+RD+LUI+LUM+GBS+TS+ES, data=NWD_500)
+vif(model4)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model4)
+# CN is less than 30
+```
+
+```{r}
+# Scenario 3
+# Model 1
+# S1: PCCs
+cor_mx5 <- cor(WD_600[7:16], method = "pearson")
+cor_mx5[upper.tri(cor_mx5)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx5) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD, BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model5 <- lm(avg_rides ~ TL+RD+LUI+LUM+GBS+TS+ES, data=WD_600)
+vif(model5)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model5)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx6 <- cor(NWD_600[7:16], method = "pearson")
+cor_mx6[upper.tri(cor_mx6)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx6) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD, BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model6 <- lm(avg_rides ~ TL+RD+LUI+LUM+GBS+TS+ES, data=NWD_600)
+vif(model6)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model6)
+# CN is less than 30
+```
+
+```{r}
+# Scenario 4
+# Model 1
+# S1: PCCs
+cor_mx7 <- cor(WD_800[7:16], method = "pearson")
+cor_mx7[upper.tri(cor_mx7)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx7) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, LUI, BD and BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model7 <- lm(avg_rides ~ TL+RD+LUM+GBS+TS+ES, data=WD_800)
+vif(model7)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model7)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx8 <- cor(NWD_800[7:16], method = "pearson")
+cor_mx8[upper.tri(cor_mx8)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx8) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, LUI, BS and BD whose coefficients are greater than 0.7
+
+# S2: VIFs
+model8 <- lm(avg_rides ~ TL+RD+LUM+GBS+TS+ES, data=NWD_800)
+vif(model8)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model8)
+# CN is less than 30
+```
+
+```{r}
+# Scenario 5
+# Model 1
+# S1: PCCs
+cor_mx9 <- cor(WD_5min[7:16], method = "pearson")
+cor_mx9[upper.tri(cor_mx9)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx9) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD whose coefficients are greater than 0.7
+
+# S2: VIFs
+model9 <- lm(avg_rides ~ TL+BS+RD+LUI+LUM+GBS+TS+ES, data=WD_5min)
+vif(model9)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model9)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx10 <- cor(NWD_5min[7:16], method = "pearson")
+cor_mx10[upper.tri(cor_mx10)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx10) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD whose coefficients are greater than 0.7
+
+# S2: VIFs
+model10 <- lm(avg_rides ~ TL+BS+RD+LUI+LUM+GBS+TS+ES, data=NWD_5min)
+vif(model10)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model10)
+# CN is less than 30
+```
+
+```{r}
+# Scenario 6
+# Model 1
+# S1: PCCs
+cor_mx11 <- cor(WD_10min[7:16], method = "pearson")
+cor_mx11[upper.tri(cor_mx11)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx11) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD, BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model11 <- lm(avg_rides ~ TL+RD+LUM+GBS+TS+ES+LUI, data=WD_10min)
+vif(model11)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model11)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx12 <- cor(NWD_10min[7:16], method = "pearson")
+cor_mx12[upper.tri(cor_mx12)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx12) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS, BD, BS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model12 <- lm(avg_rides ~ TL+RD+LUM+GBS+TS+ES+LUI, data=NWD_10min)
+vif(model12)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model12)
+# CN is less than 30
+```
+
+
+```{r}
+# Import MGWR results for comparison
+MGWR_models <- read_csv("MGWR_Data/MGWR_models.csv")
+
+MGWR_models$scenarios <- as.factor(MGWR_models$scenarios)
+MGWR_models$models <- as.factor(MGWR_models$models)
+
+MGWR_models$scenarios <- factor(MGWR_models$scenarios, levels = c("400m_bf", "500m_bf", "600m_bf", "800m_bf", "5min_iso", "10min_iso", "400m_bf_Thi", "10min_iso_Thi"))
+
+# Separate the data for WD_daily and NWD_daily
+wd_daily <- MGWR_models %>% filter(models == "WD_daily")
+nwd_daily <- MGWR_models %>% filter(models == "NWD_daily")
+
+# Plot for R2
+ggplot() +
+  geom_line(data = wd_daily, aes(x = scenarios, y = R2, group = models, color = models),linewidth=0.5) +
+  geom_point(data = wd_daily, aes(x = scenarios, y = R2, group = models, color = models,fill=models), shape = 22, size = 4) +
+  geom_line(data = nwd_daily, aes(x = scenarios, y = R2, group = models, color = models),linewidth=0.5) +
+  geom_point(data = nwd_daily, aes(x = scenarios, y = R2, group = models, color = models, fill=models), shape = 24, size = 4) +
+  theme_minimal() +
+   theme(legend.position = "bottom",
+          legend.background = element_blank(), # Remove the legend background
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), # Add a black border
+          legend.margin = margin(-5, 0, 0, 0),
+          legend.text = element_text(size = 10),
+          axis.text.x = element_text(angle = 30, vjust = 0.5, size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 12,  vjust = -0.5), 
+          axis.title.y = element_text(size = 12)) +
+  scale_color_manual(values = c("WD_daily" = "#b04f3b", "NWD_daily" = "#9265bc")) +
+  scale_fill_manual(values = c("WD_daily" = "#b04f3b", "NWD_daily" = "#9265bc")) +
+  labs(x = "Scenarios", y = "R^2", title = "R2 for different scenarios") +
+  scale_y_continuous(breaks = seq(0.55, 0.85, by = 0.05), limits = c(0.55, 0.85)) +
+  coord_fixed(ratio = 0.8) +
+  theme(aspect.ratio = 0.8) 
+
+# Plot for AICc
+ggplot() +
+  geom_line(data = wd_daily, aes(x = scenarios, y = AICc, group = models, color = models),linewidth=0.5) +
+  geom_point(data = wd_daily, aes(x = scenarios, y = AICc, group = models, color = models,fill=models), shape = 22, size = 4) +
+  geom_line(data = nwd_daily, aes(x = scenarios, y = AICc, group = models, color = models),linewidth=0.5) +
+  geom_point(data = nwd_daily, aes(x = scenarios, y = AICc, group = models, color = models, fill=models), shape = 24, size = 4) +
+  theme_minimal() +
+   theme(legend.position = "bottom",
+          legend.background = element_blank(), # Remove the legend background
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), # Add a black border
+          legend.margin = margin(-5, 0, 0, 0),
+          legend.text = element_text(size = 10),
+          axis.text.x = element_text(angle = 30, vjust = 0.5, size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 12,  vjust = -0.5), 
+          axis.title.y = element_text(size = 12)) +
+  scale_color_manual(values = c("WD_daily" = "#b04f3b", "NWD_daily" = "#9265bc")) +
+  scale_fill_manual(values = c("WD_daily" = "#b04f3b", "NWD_daily" = "#9265bc")) +
+  scale_y_continuous(breaks = seq(180, 280, by = 10), limits = c(180, 280)) +
+  coord_fixed(ratio = 0.8) +
+  theme(aspect.ratio = 0.8) +
+  labs(x = "Scenarios", y = "AICc", title = "AICc for different scenarios")
+
+```
+
+
+```{r}
+# Import 2 scenarios of MSCA overlapped with Thiessen polygons
+MSCA400_Thi <- read_csv("MSCA_Thi/400m_bf_Thi.csv")
+MSCA10min_Thi <- read_csv("MSCA_Thi/10min_iso_Thi.csv")
+```
+
+```{r}
+# Join weekday ridership with variables in 400m_bf_Thi scenario
+WD_400_Thi <- WD_400 |> 
+  select(-"BS", -"BD", -"RD", -"LUI", -"LS", -"GBS", -"TS", -"ES", -"LUM")
+MSCA400_Thi <- MSCA400_Thi |> 
+  select(-"Road_length", -"building", -"Area", -"HS")
+WD_400_Thi <- WD_400_Thi |> 
+  left_join(MSCA400_Thi, c("station_id"="STATION_ID"))
+
+
+# Join weekend/holiday ridership with variables in 400m_bf_Thi scenario
+NWD_400_Thi <- NWD_400 |> 
+  select(-"BS", -"BD", -"RD", -"LUI", -"LS", -"GBS", -"TS", -"ES", -"LUM")
+NWD_400_Thi <- NWD_400_Thi |> 
+  left_join(MSCA400_Thi, c("station_id"="STATION_ID"))
+
+
+# Join weekday ridership with variables in 10min_iso_Thi scenario
+WD_10min_Thi <- WD_10min |> 
+  select(-"BS", -"BD", -"RD", -"LUI", -"LS", -"GBS", -"TS", -"ES", -"LUM")
+MSCA10min_Thi <- MSCA10min_Thi |> 
+  select(-"road_length", -"building", -"Area", -"HS")
+WD_10min_Thi <- WD_10min_Thi |> 
+  left_join(MSCA10min_Thi, c("station_id"="STATION_ID"))
+
+
+# Join weekend/holiday ridership with variables in 10min_iso_Thi scenario
+NWD_10min_Thi <- NWD_10min |> 
+  select(-"BS", -"BD", -"RD", -"LUI", -"LS", -"GBS", -"TS", -"ES", -"LUM")
+NWD_10min_Thi <- NWD_10min_Thi |> 
+  left_join(MSCA10min_Thi, c("station_id"="STATION_ID"))
+
+```
+
+
+```{r}
+# Examine the multicollinearity between the explanatory variables
+# Scenario 1: 400m_bf_Thi
+# Model 1
+# S1: PCCs
+cor_mx13 <- cor(WD_400_Thi[,c(7, 9:17)], method = "pearson")
+cor_mx13[upper.tri(cor_mx13)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx13) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model13 <- lm(avg_rides ~ TL+BS+RD+LUM+GBS+TS+ES+LUI+BD+LS, data=WD_400_Thi)
+vif(model13)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model13)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx14 <- cor(NWD_400_Thi[,c(7, 9:17)], method = "pearson")
+cor_mx14[upper.tri(cor_mx14)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx14) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model14 <- lm(avg_rides ~ TL+RD+BS+LUM+GBS+TS+ES+BD+LUI, data=NWD_400_Thi)
+vif(model14)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model14)
+# CN is less than 30
+```
+
+```{r}
+# Scenario 2: 10min_iso_Thi
+# Model 1
+# S1: PCCs
+cor_mx15 <- cor(WD_10min_Thi[,c(7, 9:17)], method = "pearson")
+cor_mx15[upper.tri(cor_mx15)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx15) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model15 <- lm(avg_rides ~ TL+BS+RD+LUM+GBS+TS+ES+LUI+BD+LS, data=WD_10min_Thi)
+vif(model15)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model15)
+# CN is less than 30
+
+# Model 2
+# S1: PCCs
+cor_mx16 <- cor(NWD_10min_Thi[,c(7, 9:17)], method = "pearson")
+cor_mx16[upper.tri(cor_mx16)] <- NA 
+cor_pairs <- as.data.frame(which(abs(cor_mx16) > 0.7, arr.ind = TRUE))
+cor_pairs
+# Remove variable LS whose coefficients are greater than 0.7
+
+# S2: VIFs
+model16 <- lm(avg_rides ~ TL+BS+RD+LUM+GBS+TS+ES+LUI+BD, data=NWD_10min_Thi)
+vif(model16)
+# All variable with VIFs smaller than 10
+
+# S3: CN
+kappa(model16)
+# CN is less than 30
+```
+
+
+```{r}
+# Adopt a GWR model to WD_10min scenario
+WD_10min_sf <- st_read("6MSCA_Data/WD_10min.shp")
+# convert simple feature as sp objects. Attributes are preserved, just the data type is changed 
+WD_10min_sp <- as(WD_10min_sf, Class="Spatial")
+
+# Select the best bandwidth using gwr.sel. The returned value is the best bandwidth for the model
+gwr.sel(avg_rds~TL+RD+LUI+LUM+GBS+TS+ES, data = WD_10min_sp)
+
+gwr_WD_10min <- gwr(avg_rds~TL+RD+LUI+LUM+GBS+TS+ES, data = WD_10min_sp, bandwidth=9375.972,hatmatrix=TRUE)
+
+gwr_WD_10min_sf <- st_as_sf(gwr_WD_10min$SDF)
+gwr_WD_10min
+```
+
+```{r}
+# Visualization for Local R2
+WD_10min_sf$r_square <- gwr_WD_10min_sf$localR2
+WD_10min_sf$r_square_category = cut(WD_10min_sf$r_square, 
+                                   breaks = seq(0.50, 1.00, by = 0.05), 
+                                   include.lowest = TRUE, 
+                                   labels = c("0.50-0.55","0.55-0.60","0.60-0.65", "0.65-0.70", "0.70-0.75",
+                                              "0.75-0.80","0.80-0.85","0.85-0.90","0.90-0.95","0.95-1.00"))
+
+tmap_mode("view")
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "r_square_category", palette = "Oranges", size = 0.05) +  # Use tm_dots for points
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+
+```{r}
+# Adopt a GWR model to NWD_400 scenario
+st_write(NWD_400, "6MSCA_Data/NWD_400.shp", delete_layer = TRUE)
+NWD_400_sf <- st_read("6MSCA_Data/NWD_400.shp")
+# convert simple feature as sp objects. Attributes are preserved, just the data type is changed 
+NWD_400_sp <- as(NWD_400_sf, Class="Spatial")
+
+# Select the best bandwidth using gwr.sel. The returned value is the best bandwidth for the model
+gwr.sel(avg_rds~TL+BS+RD+LUI+LUM+GBS+TS+ES, data = NWD_400_sp)
+
+gwr_NWD_400 <- gwr(avg_rds~TL+BS+RD+LUI+LUM+GBS+TS+ES, data = NWD_400_sp,
+                   bandwidth=12929.92,hatmatrix=TRUE)
+
+gwr_NWD_400_sf <- st_as_sf(gwr_NWD_400$SDF)
+```
+
+```{r}
+# Visualization for Local R2
+NWD_400_sf$r_square <- gwr_NWD_400_sf$localR2
+
+NWD_400_sf$r_square_category = cut(NWD_400_sf$r_square, 
+                                   breaks = seq(0.50, 1.00, by = 0.05), 
+                                   include.lowest = TRUE, 
+                                   labels = c("0.50-0.55","0.55-0.60","0.60-0.65", "0.65-0.70", "0.70-0.75",
+                                              "0.75-0.80","0.80-0.85","0.85-0.90","0.90-0.95","0.95-1.00"))
+
+tmap_mode("view")
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "r_square_category", palette = "Oranges", size = 0.1) +  # Use tm_dots for points
+  tm_legend(outside = TRUE, text.size = .8)
+
+```
+
+
+```{r}
+# Export data for MGWR modeling in MGWR 2.2 software
+write.csv(WD_400_Thi[,c(-6)], "MGWR_Data/WD_400_Thi.csv", row.names = FALSE)
+write.csv(NWD_400_Thi[,c(-6)], "MGWR_Data/NWD_400_Thi.csv", row.names = FALSE)
+
+write.csv(WD_10min_Thi[,c(-6)], "MGWR_Data/WD_10min_Thi.csv", row.names = FALSE)
+write.csv(NWD_10min_Thi[,c(-6)], "MGWR_Data/NWD_10min_Thi.csv", row.names = FALSE)
+```
+
+
+```{r}
+# Count the number of significant stations for each independent variable
+WD_10min_results <- read_csv("MGWR_Data/WD_10min/WD_10min_results.csv")
+NWD_400_results <- read_csv("MGWR_Data/NWD_400/NWD_400_results.csv")
+
+result1 <- data.frame(
+  variable = c("INT", "TL", "RD", "LUI", "LUM", "GBS", "TS", "ES"),
+  nstation = c(sum(WD_10min_results$p_Intercept < 0.05),
+               sum(WD_10min_results$p_TL < 0.05),
+               sum(WD_10min_results$p_RD < 0.05),
+               sum(WD_10min_results$p_LUI < 0.05),
+               sum(WD_10min_results$p_LUM < 0.05),
+               sum(WD_10min_results$p_GBS < 0.05),
+               sum(WD_10min_results$p_TS < 0.05),
+               sum(WD_10min_results$p_ES < 0.05)),
+  bandwiths = c(45,45,44,43,81,59,115,115)
+)
+
+result2 <- data.frame(
+  variable = c("INT", "TL", "BS", "RD", "LUI", "LUM", "GBS", "TS", "ES"),
+  nstation = c(sum(NWD_400_results$p_Intercept < 0.05),
+               sum(NWD_400_results$p_TL < 0.05),
+               sum(NWD_400_results$p_BS < 0.05),
+               sum(NWD_400_results$p_RD < 0.05),
+               sum(NWD_400_results$p_LUI < 0.05),
+               sum(NWD_400_results$p_LUM < 0.05),
+               sum(NWD_400_results$p_GBS < 0.05),
+               sum(NWD_400_results$p_TS < 0.05),
+               sum(NWD_400_results$p_ES < 0.05)),
+  bandwiths = c(47,47,44,46,60,115,46,106,115)
+)
+write.csv(result1, "result1.csv", row.names = FALSE)
+write.csv(result2, "result2.csv", row.names = FALSE)
+```
+
+
+```{r}
+WD_10min_lR2 <- WD_10min_results[,c(1,7,8)]
+WD_10min_sf <- WD_10min_sf |> 
+  left_join(WD_10min_lR2, c("statn_d"="station_id"))
+
+```
+
+```{r}
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "mgwr_residual",  style="jenks", n=5,
+              palette = "-RdYlBu", size = 0.12, alpha=0.9, border.col="grey",
+              border.lwd=2) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+WD_10min_sf$localR2_category2 = cut(WD_10min_sf$localR2.y, 
+                                   breaks = seq(0.50, 1.00, by = 0.05), 
+                                   include.lowest = TRUE, 
+                                   labels = c("0.50-0.55","0.55-0.60","0.60-0.65", "0.65-0.70", "0.70-0.75",
+                                              "0.75-0.80","0.80-0.85","0.85-0.90","0.90-0.95","0.95-1.00"))
+
+
+tmap_mode("view")
+
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "localR2_category2", palette = "Oranges", size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "mgwr_residual",  style="jenks", n=5,
+              palette = "-RdYlBu", size = 0.12, alpha=1, border.col="grey",
+              border.lwd=2) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+
+```{r}
+NWD_400_lR2 <- NWD_400_results[,c(1,7,8)]
+NWD_400_sf <- NWD_400_sf |> 
+  left_join(NWD_400_lR2, c("statn_d"="station_id"))
+
+NWD_400_sf$localR2_category2 = cut(NWD_400_sf$localR2.y, 
+                                   breaks = seq(0.50, 1.00, by = 0.05), 
+                                   include.lowest = TRUE, 
+                                   labels = c("0.50-0.55","0.55-0.60","0.60-0.65", "0.65-0.70", "0.70-0.75",
+                                              "0.75-0.80","0.80-0.85","0.85-0.90","0.90-0.95","0.95-1.00"))
+
+
+tmap_mode("view")
+
+
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "localR2_category2", palette = "Oranges", size = 0.12) +
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+
+```{r}
+library(ggplot2)
+library(ggpp) 
+
+Sata <- read.csv('result1.csv', stringsAsFactors = FALSE, header=T) 
+
+Sata$variable<-factor(Sata$variable, levels = c('INT','TL','RD','LUI','LUM','GBS','TS','ES','BS'))
+
+p1 <- ggplot(Sata, aes(variable, nstation))+
+  geom_bar(stat="identity",fill="#b4b6b7")+
+  geom_vhlines(xintercept=0,
+               yintercept=68.38,
+               linetype="dashed",
+               color="#4c4495",
+               cex=0.75) +
+  geom_point(data=Sata, aes(x=variable, y=bandwiths),
+             position = position_dodge(width =0.8), 
+             color="#df3226",
+             size = 2.25)+
+  geom_line(data=Sata, aes(x=variable, y=bandwiths),
+            group="",
+            color="#df3226",
+            size = 0.9,
+            alpha=1)+
+  labs(x = "", y = "")+
+  scale_y_continuous(expand = c(0,0),breaks=seq(0,120,30),limits=c(0,121))+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.line = element_line(colour = 'black'),
+        axis.text.x = element_text(family="serif",size = 12,colour = "black",angle = 45, hjust = 1),
+        axis.text.y = element_text(family="serif",size = 12,colour = "black",angle = 0, hjust = 1),
+        axis.title = element_text(family="serif",face="bold",size = 10),
+        plot.title = element_text(family="serif",face="bold",size = 12,hjust = 0))
+ggsave("Figure1.png", height = 2.5,width = 6)
+pdf("1.Mpdel 1.pdf",height = 2.5,width = 6) #pdf
+p1
+dev.off()
+  
+#================================================================
+Sata <- read.csv('result2.csv', stringsAsFactors = FALSE, header=T) 
+Sata$variable<-factor(Sata$variable, levels = c('INT','TL','RD','LUI','LUM','GBS','TS','ES'))
+#############################################
+p2 <- ggplot(Sata, aes(variable, nstation))+
+  geom_bar(stat="identity",fill="#b4b6b7")+
+  geom_vhlines(xintercept=0,
+               yintercept=69.556,
+               linetype="dashed",
+               color="#4c4495",
+               cex=0.75) +
+  geom_point(data=Sata, aes(x=variable, y=bandwiths),
+             position = position_dodge(width =0.8), 
+             color="#df3226",
+             size = 2.25)+
+  geom_line(data=Sata, aes(x=variable, y=bandwiths),
+            group="",
+            color="#df3226",
+            size = 0.9,
+            alpha=1)+
+  labs(x = "", y = "")+
+  scale_y_continuous(expand = c(0,0),breaks=seq(0,120,30),limits=c(0,121))+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.line = element_line(colour = 'black'),
+        axis.text.x = element_text(family="serif",size = 12,colour = "black",angle = 45, hjust = 1),
+        axis.text.y = element_text(family="serif",size = 12,colour = "black",angle = 0, hjust = 1),
+        axis.title = element_text(family="serif",face="bold",size = 10),
+        plot.title = element_text(family="serif",face="bold",size = 12,hjust = 0))
+ggsave("Figure2.png", height = 2.5,width = 6)
+pdf("2.Mpdel 3.pdf",height = 2.5,width = 6) #pdf
+p2
+dev.off()  
+ 
+#===============================================================================#
+data <- read.csv('MGWR_Data/NWD_400/NWD_400_results.csv', stringsAsFactors = FALSE, header=T)
+data$sample<-factor(data$sample, levels = c('INT','TL','RD','LUI','LUM','GBS','TS','ES','BS'))
+p3 <- ggplot(data, aes(sample, value))+
+  
+  stat_boxplot(geom ="errorbar",width = 0.25)+
+  geom_boxplot(aes(fill=sample),width = 0.5,
+               size=0.25) +
+  
+  geom_jitter(width = 0.1,alpha = 0.4,size=0.4)+
+  labs(x = "", y = "")+
+  #scale_y_continuous(expand = c(0,0),breaks=seq(0,1.2,0.3),limits=c(0,1.21))
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.line = element_line(colour = 'black'),
+        axis.text.x = element_text(family="serif",size = 12,colour = "black",angle = 45, hjust = 1),
+        axis.text.y = element_text(family="serif",size = 12,colour = "black",angle = 0, hjust = 1),
+        axis.title = element_text(family="serif",face="bold",size = 10),
+        plot.title = element_text(family="serif",face="bold",size = 12,hjust = 0))
+ggsave("Figure4.png", height = 2.5,width = 7)
+pdf("4.Mpdel 3.pdf",height = 2.5,width = 7) #pdf
+p3
+dev.off()
+```
+
+
+```{r}
+# Visualization for top 4 variables that have relatively strong impacts on metro ridership on weekdays
+WD_10min_co <- WD_10min_results[,c(1,16,10,13,11,12)]
+WD_10min_sf <- WD_10min_sf |> 
+  left_join(WD_10min_co, c("statn_d"="station_id"))
+```
+
+```{r}
+# LUI
+WD_10min_sf$LUI_category = cut(WD_10min_sf$beta_LUI, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "LUI_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# TL
+WD_10min_sf$TL_category = cut(WD_10min_sf$beta_TL, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "TL_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# GBS
+WD_10min_sf$GBS_category = cut(WD_10min_sf$beta_GBS, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "GBS_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# RD
+WD_10min_sf$RD_category = cut(WD_10min_sf$beta_RD, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "RD_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# ES
+WD_10min_co2 <- WD_10min_results[,c(1,15)]
+WD_10min_sf <- WD_10min_sf |> 
+  left_join(WD_10min_co2, c("statn_d"="station_id"))
+WD_10min_sf$ES_category = cut(WD_10min_sf$beta_ES, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(WD_10min_sf) + 
+  tm_dots(col = "ES_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# Visualization for top 4 variables that have relatively strong impacts on metro ridership on weekdays
+NWD_400_co <- NWD_400_results[,c(1,14,10,17,12)]
+NWD_400_sf <- NWD_400_sf |> 
+  left_join(NWD_400_co, c("statn_d"="station_id"))
+```
+
+```{r}
+# GBS
+NWD_400_sf$GBS_category = cut(NWD_400_sf$beta_GBS, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "GBS_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# TL
+NWD_400_sf$TL_category = cut(NWD_400_sf$beta_TL, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "TL_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# LUI
+NWD_400_sf$LUI_category = cut(NWD_400_sf$beta_LUI, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "LUI_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# RD
+NWD_400_sf$RD_category = cut(NWD_400_sf$beta_RD, 
+                                   breaks = seq(-0.6, 1.4, by = 0.1), 
+                                   include.lowest = TRUE)
+
+
+tmap_mode("view")
+
+tm_shape(NWD_400_sf) + 
+  tm_dots(col = "RD_category", palette = "-RdYlBu", n = 20, contrast = c(0, 0.8), size = 0.12) +  
+  tm_legend(outside = TRUE, text.size = .8)
+```
+
+```{r}
+# Visualization for independent variables in the scenario of 10min_iso
+WD_10min_iso <- st_read("6MSCA_Data/data/10min_service.shp")
+WD_10min_iso_data <- read_csv("6MSCA_Data/10min.csv")
+
+WD_10min_iso <- WD_10min_iso |> 
+  left_join(WD_10min_iso_data[,c(1, 5, 12, 10, 18, 14, 15, 16)], c("FacilityID"="FacilityID"))
+
+WD_10min_iso <- WD_10min_iso |> 
+  left_join(WD_10min_Thi[,c(1,7)], c("STATION_ID"="station_id"))
+
+WD_10min_iso <- na.omit(WD_10min_iso)
+```
+
+```{r}
+tm_shape(WD_10min_iso) +
+  tm_polygons("RD", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(WD_10min_iso) +
+  tm_polygons("LUI", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(WD_10min_iso) +
+  tm_polygons("LUM", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(WD_10min_iso) +
+  tm_polygons("nGBS", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(WD_10min_iso) +
+  tm_polygons("nTS", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(WD_10min_iso) +
+  tm_polygons("nES", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+# Visualization for independent variables in the scenario of 400m_bf
+NWD_400_bf <- st_read("6MSCA_Data/data/400m_buffer.shp")
+NWD_400_bf_data <- read_csv("6MSCA_Data/400.csv")
+
+NWD_400_bf <- NWD_400_bf |> 
+  left_join(NWD_400_bf_data[,c(1, 12, 9, 10, 18, 14, 15, 16)], c("STATION_ID"="STATION_ID"))
+
+NWD_400_bf <- NWD_400_bf |> 
+  left_join(NWD_400_Thi[,c(1,7)], c("STATION_ID"="station_id"))
+
+NWD_400_bf <- na.omit(NWD_400_bf)
+```
+
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("TL", 
+              style="jenks", n=3,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("BS", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("RD", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("LUI", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("LUM", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("nGBS", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("nTS", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
+```{r}
+tm_shape(NWD_400_bf) +
+  tm_polygons("nES", 
+              style="jenks", n=5,
+              palette = "-RdYlBu", alpha=0.8, border.col="grey",
+              border.lwd=2)
+```
+
