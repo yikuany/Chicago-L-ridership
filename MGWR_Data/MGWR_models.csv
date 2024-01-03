@@ -1,0 +1,17 @@
+﻿scenarios,R2,AICc,models
+400m_bf,0.751,212.954,WD_daily
+500m_bf,0.743,209.122,WD_daily
+600m_bf,0.709,220.12,WD_daily
+800m_bf,0.716,221.743,WD_daily
+5min_iso,0.735,211.947,WD_daily
+10min_iso,0.78,196.124,WD_daily
+400m_bf_Thi,0.705,234.643,WD_daily
+10min_iso_Thi,0.715,230.761,WD_daily
+400m_bf,0.694,242.177,NWD_daily
+500m_bf,0.657,241.488,NWD_daily
+600m_bf,0.605,253.169,NWD_daily
+800m_bf,0.63,248.74,NWD_daily
+5min_iso,0.655,240.906,NWD_daily
+10min_iso,0.656,244.726,NWD_daily
+400m_bf_Thi,0.64,257.568,NWD_daily
+10min_iso_Thi,0.606,262.383,NWD_daily
