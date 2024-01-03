@@ -2,6 +2,9 @@
 The study employs Multiscale Geographically Weighted Regression (MGWR) to analyze spatial variations in metro ridership, taking into account different built environment factors. The research aims to understand the specific scale of metro station catchment areas in Chicago and how these factors contribute to the spatial variation of metro ridership. This study provides valuable insights for urban planners and local authorities, aiding in the development of tailored policies to enhance metro system effectiveness and utilization.
 ### Data Collection and Cleaning:
 Collected data on daily ridership and built environment factors for 116 metro stations across 7 lines in Chicago from various platforms. Data was cleaned using R, ensuring accuracy and consistency in preparation for analysis.
+
+![study area](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/aa3705f9-0e52-42aa-8354-eb80ed52105d)
+
 ![variables table](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/9816fa43-094b-407b-b829-bb0c40d07eb4)
 
 ### Proximity and Service Area Analysis:
