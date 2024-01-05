@@ -17,7 +17,7 @@ Conducted analysis of catchment areas for Chicago metro stations. Utilized ArcGI
 ![Thi](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/de92be9e-d3c7-4ac6-abf4-80c0f58a8b97)
 
 ### Geographically Weighted Regression Analysis:
-Statistical tests for normality and multicollinearity of variables were completed using R. Multiscale Geographically Weighted Regression (MGWR) was employed for more precise and localized spatial data modeling compared to traditional methods. This approach identified the scale of catchment areas and built environment factors affecting metro ridership in Chicago through comparion of 16 MGWR models.
+Statistical tests for normality and multicollinearity of variables were completed using R. Multiscale Geographically Weighted Regression (MGWR) was employed for more precise and localized spatial data modeling compared to traditional methods. This approach identified the scale of catchment areas and built environment factors affecting metro ridership in Chicago through the comparion of 16 MGWR models.
 
 ![normality test](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/09e5d4d5-f218-4f57-98fa-ec1e23a6c513)
 
