@@ -5,7 +5,7 @@ Collected data on daily ridership and built environment factors for 116 metro st
 
 ![study area](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/aa3705f9-0e52-42aa-8354-eb80ed52105d)
 
-![variables table](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/9816fa43-094b-407b-b829-bb0c40d07eb4)
+![variables table](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/14b70360-4d97-4de9-9b12-cb3732bd7bf8)
 
 ![Daily Total Ridership](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/7b9fc5f5-1d21-4aed-b7e8-580ec3c432f4)
 
@@ -24,6 +24,8 @@ Statistical tests for normality and multicollinearity of variables were complete
 ![multicolinearity tests](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/e859b3a0-57ae-4eeb-a634-252e5896f538)
 
 ![Comparison of MGWR models](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/93580669-7b9b-4768-bee1-10ea51c078ca)
+
+![localR residuals](https://github.com/yikuany/Chicago-L-ridership/assets/150404282/b25b94f9-dbfb-46b0-aaaa-e776617fc36e)
 
 ### Data-Driven Planning Strategies:
 Utilized tmap and ggplot2 libraries in R for data visualization. Studied the specific impacts of factors like land use intensity and road density on ridership, and proposed planning improvement strategies based on these findings.
